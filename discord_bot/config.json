@@ -1,0 +1,8 @@
+{
+  "discord": {
+    "token": ""
+  },
+  "server": {
+    "port": "37405"
+  }
+}
