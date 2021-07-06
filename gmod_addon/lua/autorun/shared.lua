@@ -24,96 +24,47 @@ CreateConVar("discordbot_host", "localhost", FCVAR_ARCHIVE, "Sets the node serve
 CreateConVar("discordbot_port", "37405", FCVAR_ARCHIVE, "Sets the node server port.")
 CreateConVar("discordbot_name", "TTT Discord Bot", FCVAR_ARCHIVE, "Sets the Plugin Prefix for helpermessages.") --The name which will be displayed in front of any Message
 
-FILEPATH = "ttt_discord_bot.dat"
-TRIES = 3
-
-muted = {}
-
-ids = {}
-ids_raw = file.Read( FILEPATH, "DATA" )
-if (ids_raw) then
-	ids = util.JSONToTable(ids_raw)
-end
-
-function saveIDs()
-	file.Write( FILEPATH, util.TableToJSON(ids))
-end
-
-
-function GET(req,params,cb,tries)
-	httpAdress = ("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString())
-	http.Fetch(httpAdress,function(res)
-			--print(res)
-		cb(util.JSONToTable(res))
-	end,function(err)
-		print("["..GetConVar("discordbot_name"):GetString().."] ".."Request to bot failed. Is the bot running?")
-		print("Err: "..err)
-		if (!tries) then tries = TRIES end
-		if (tries != 0) then GET(req,params,cb, tries-1) end
-	end,{req=req,params=util.TableToJSON(params)})
-end
-
 function sendClientIconInfo(ply,mute)
 	net.Start("drawMute")
 	net.WriteBool(mute)
 	net.Send(ply)
 end
 
---[[
-function isMuted(ply)
-	for i,v in ipairs(muted) do
-		if ply == v then return
-			true
+function sendMute(ply, bool)
+	http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/mute", 
+		{
+			mute = bool,
+			steamID = ply:SteamID()
+		}, 
+		function(res)
+			-- util.JSONToTable(res)
+			-- responseTable = util.JSONToTable(res);
+			-- if (responseTable.status == false) then
+			-- 	ply:PrintMessage(HUD_PRINTCENTER,"["..GetConVar("discordbot_name"):GetString().."] ".."Couldn't mute you in discord, be quiet! (Server Error)")
+			-- end
 		end
-	end
-	return false
-end]]
-function isMuted(ply)
-	return muted[ply]
+	)
 end
 
 function mute(ply)
-	if (ids[ply:SteamID()]) then
-		if (!isMuted(ply)) then
-			GET("mute",{mute=true,id=ids[ply:SteamID()]},function(res)
-				if (res) then
-					--PrintTable(res)
-					if (res.success) then
-						ply:PrintMessage(HUD_PRINTCENTER,"["..GetConVar("discordbot_name"):GetString().."] ".."You're muted in discord!")
-						sendClientIconInfo(ply,true)
-						muted[ply] = true
-					end
-					if (res.error) then
-						print("["..GetConVar("discordbot_name"):GetString().."] ".."Error: "..res.err)
-					end
-				end
-
-			end)
-		end
-	end
+	sendMute(ply, "true") -- I don't know lua (learnt the smallest bit today) but for some reason passing a bool does not retain in the table
+	sendClientIconInfo(ply,true)
 end
+
 
 function unmute(ply)
 	if (ply) then
-		if (ids[ply:SteamID()]) then
-			if (isMuted(ply)) then
-				GET("mute",{mute=false,id=ids[ply:SteamID()]},function(res)
-					if (res.success) then
-						if (ply) then
-							ply:PrintMessage(HUD_PRINTCENTER,"["..GetConVar("discordbot_name"):GetString().."] ".."You're no longer muted in discord!")
-						end
-						sendClientIconInfo(ply,false)
-						muted[ply] = false
-					end
-					if (res.error) then
-						print("["..GetConVar("discordbot_name"):GetString().."] ".."Error: "..res.err)
-					end
-				end)
-			end
-		end
+		sendMute(ply, "false") -- I don't know lua but for some reason passing a bool does not retain in the table
+		sendClientIconInfo(ply,false)
 	else
-		for ply,val in pairs(muted) do
-			if val then unmute(ply) end
+		http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/unmuteAll", 
+			{}, 
+			function(res)
+				--No real need to do anything
+			end
+		)
+		for Key, Player in pairs( player.GetAll() ) do
+			sendClientIconInfo(Player, false)
 		end
 	end
 end
@@ -134,32 +85,21 @@ function commonRoundState()
   return -1
 end
 
-hook.Add("PlayerSay", "ttt_discord_bot_PlayerSay", function(ply,msg)
-  if (string.sub(msg,1,9) != '!discord ') then return end
-  tag = string.sub(msg,10)
-  tag_utf8 = ""
-
-  for p, c in utf8.codes(tag) do
-	tag_utf8 = string.Trim(tag_utf8.." "..c)
-  end
-	GET("connect",{tag=tag_utf8},function(res)
-		if (res.answer == 0) then ply:PrintMessage(HUD_PRINTTALK,"["..GetConVar("discordbot_name"):GetString().."] ".."No guilde member with a discord tag like '"..tag.."' found.") end
-		if (res.answer == 1) then ply:PrintMessage(HUD_PRINTTALK,"["..GetConVar("discordbot_name"):GetString().."] ".."Found more than one user with a discord tag like '"..tag.."'. Please specify!") end
-		if (res.tag && res.id) then
-			ply:PrintMessage(HUD_PRINTTALK,"["..GetConVar("discordbot_name"):GetString().."] ".."Discord tag '"..res.tag.."' successfully boundet to SteamID '"..ply:SteamID().."'") --lie! actually the discord id is bound! ;)
-			ids[ply:SteamID()] = res.id
-			saveIDs()
-		end
-	end)
-	return ""
-end)
-
 hook.Add("PlayerInitialSpawn", "ttt_discord_bot_PlayerInitialSpawn", function(ply)
-	if (ids[ply:SteamID()]) then
-		ply:PrintMessage(HUD_PRINTTALK,"["..GetConVar("discordbot_name"):GetString().."] ".."You are connected with discord.")
-	else
-		ply:PrintMessage(HUD_PRINTTALK,"["..GetConVar("discordbot_name"):GetString().."] ".."You are not connected with discord. Write '!discord DISCORDTAG' in the chat. E.g. '!discord marcel.js#4402'")
-	end
+	http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/checkUser", 
+		{
+			steamID= ply:SteamID(),
+			steamName = ply:GetName()
+		}, 
+		function(res)
+			util.JSONToTable(res)
+			responseTable = util.JSONToTable(res);
+			if (responseTable.status == false) then
+				print("Kicked "..ply:GetName()..": No Discord")
+				ply:Kick( "Please connect with Discord" )
+			end
+		end
+	)
 end)
 
 hook.Add("PlayerSpawn", "ttt_discord_bot_PlayerSpawn", function(ply)
