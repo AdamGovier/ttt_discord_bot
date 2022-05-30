@@ -1,6 +1,6 @@
 # Fork of TTT Discord Bot
 
-Instead of using !discord #xxxx in the chat in game when you join it will message a discord channel which it auto creates saying "[steam name] has joined is this you?" and simply react with thumbs up to link your discord to steamID. WIll also kick non discord users by default (no option to disable this).
+Instead of using !discord #xxxx in the chat in game, when you join it will message a discord channel which is auto generated and sends a message saying "[steam name] has joined is this you?" and simply react with thumbs up to link your discord to steamID. WIll also kick non discord users by default (no option to disable this).
 
 
 Please make sure you have ```-allowlocalhttp``` set in your server launch arguments.
