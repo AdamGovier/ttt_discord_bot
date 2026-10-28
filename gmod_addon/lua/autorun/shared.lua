@@ -1,130 +1,184 @@
 AddCSLuaFile()
+
+if CLIENT then
+    local drawMute = false
+    local muteIcon = Material("mute-icon.png")
+    net.Receive("drawMute", function() drawMute = net.ReadBool() end)
+    hook.Add("HUDPaint", "ttt_discord_bot_HUDPaint", function()
+        if not drawMute then return end
+        surface.SetDrawColor(255, 255, 255, 255)
+        surface.SetMaterial(muteIcon)
+        surface.DrawTexturedRect(0, 0, 128, 128)
+    end)
+    return
+end
+
 resource.AddFile("materials/mute-icon.png")
-if (CLIENT) then
-
-	local drawMute = false
-	local muteIcon = Material("materials/mute-icon.png")
-
-	net.Receive("drawMute",function()
-		drawMute = net.ReadBool()
-	end)
-
-	hook.Add( "HUDPaint", "ttt_discord_bot_HUDPaint", function()
-		if (!drawMute) then return end
-		surface.SetDrawColor(255, 255, 255, 255)
-		surface.SetMaterial(muteIcon)
-		surface.DrawTexturedRect(0, 0, 128, 128)
-	end )
-
-
-	return
-end
 util.AddNetworkString("drawMute")
-CreateConVar("discordbot_host", "localhost", FCVAR_ARCHIVE, "Sets the node server address.")
-CreateConVar("discordbot_port", "37405", FCVAR_ARCHIVE, "Sets the node server port.")
-CreateConVar("discordbot_name", "TTT Discord Bot", FCVAR_ARCHIVE, "Sets the Plugin Prefix for helpermessages.") --The name which will be displayed in front of any Message
+CreateConVar("discordbot_host", "127.0.0.1", FCVAR_ARCHIVE, "Bot HTTP server address.")
+CreateConVar("discordbot_port", "37405", FCVAR_ARCHIVE, "Bot HTTP server port.")
+CreateConVar("discordbot_name", "TTT Discord Bot", FCVAR_ARCHIVE, "Prefix for helper messages.")
+CreateConVar("discordbot_api_key", "", { FCVAR_ARCHIVE, FCVAR_PROTECTED }, "Must match BOT_API_KEY.")
+CreateConVar("discordbot_require_link", "1", FCVAR_ARCHIVE, "Kick unlinked players after creating a Discord confirmation.")
+CreateConVar("discordbot_debug", "0", FCVAR_ARCHIVE, "Log bot request starts and successful responses.")
 
-function sendClientIconInfo(ply,mute)
-	net.Start("drawMute")
-	net.WriteBool(mute)
-	net.Send(ply)
+local function debugLog(message)
+    if GetConVar("discordbot_debug"):GetBool() then
+        print("[" .. GetConVar("discordbot_name"):GetString() .. "] " .. message)
+    end
 end
 
-function sendMute(ply, bool)
-	http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/mute", 
-		{
-			mute = bool,
-			steamID = ply:SteamID()
-		}, 
-		function(res)
-			-- util.JSONToTable(res)
-			-- responseTable = util.JSONToTable(res);
-			-- if (responseTable.status == false) then
-			-- 	ply:PrintMessage(HUD_PRINTCENTER,"["..GetConVar("discordbot_name"):GetString().."] ".."Couldn't mute you in discord, be quiet! (Server Error)")
-			-- end
-		end
-	)
+-- Keep remote error text on one line and never print the configured API key.
+local function logText(value, apiKey)
+    local text = tostring(value or "")
+    if apiKey and apiKey ~= "" then
+        text = string.Replace(text, apiKey, "[REDACTED]")
+    end
+    text = string.gsub(text, "%c", " ")
+    if #text > 300 then text = string.sub(text, 1, 300) .. "..." end
+    return text
 end
 
-function mute(ply)
-	sendMute(ply, "true") -- I don't know lua (learnt the smallest bit today) but for some reason passing a bool does not retain in the table
-	sendClientIconInfo(ply,true)
+local function reportError(message)
+    ErrorNoHalt("[" .. GetConVar("discordbot_name"):GetString() .. "] " .. message .. "\n")
 end
 
-
-function unmute(ply)
-	if (ply) then
-		sendMute(ply, "false") -- I don't know lua but for some reason passing a bool does not retain in the table
-		sendClientIconInfo(ply,false)
-	else
-		http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/unmuteAll", 
-			{}, 
-			function(res)
-				--No real need to do anything
-			end
-		)
-		for Key, Player in pairs( player.GetAll() ) do
-			sendClientIconInfo(Player, false)
-		end
-	end
+-- Keep death, spawn and round-reset requests in game-event order.
+local requests = {}
+local busy = false
+local requestID = 0
+local function nextRequest()
+    if busy or #requests == 0 then return end
+    busy = true
+    local request = table.remove(requests, 1)
+    local apiKey = GetConVar("discordbot_api_key"):GetString()
+    local url = "http://" .. GetConVar("discordbot_host"):GetString() .. ":" .. GetConVar("discordbot_port"):GetString() .. request.route
+    local started = SysTime()
+    local label = "Request #" .. request.id .. " POST " .. logText(url, apiKey)
+    local function context()
+        return label .. string.format(" (%.2fs, %d queued)", SysTime() - started, #requests)
+    end
+    debugLog(label .. "; API key " .. (apiKey ~= "" and "configured" or "missing"))
+    local function finish(data)
+        busy = false
+        if request.callback then
+            local ok, err = pcall(request.callback, data)
+            if not ok then reportError(context() .. " callback failed: " .. logText(err, apiKey)) end
+        end
+        nextRequest()
+    end
+    http.Post(url,
+        request.parameters,
+        function(body, size, headers, code)
+            local data = util.JSONToTable(body)
+            if code ~= 200 or not istable(data) or not isbool(data.status) then
+                local detail = istable(data) and data.error or body
+                local hint = ""
+                if code == 401 then
+                    hint = " Check discordbot_api_key matches BOT_API_KEY."
+                elseif code == 503 then
+                    hint = " Check the bot's Discord connection and startup logs."
+                elseif tonumber(code) and tonumber(code) >= 500 then
+                    hint = " Check the Node bot logs for the underlying error."
+                end
+                reportError(context() .. " returned HTTP " .. tostring(code)
+                    .. "; expected HTTP 200 with JSON boolean status; response: " .. logText(detail, apiKey) .. hint)
+                finish(nil)
+                return
+            end
+            debugLog(context() .. " returned HTTP " .. tostring(code) .. "; status=" .. tostring(data.status))
+            finish(data)
+        end,
+        function(reason)
+            reportError(context() .. " failed before an HTTP response: " .. logText(reason, apiKey)
+                .. ". Check -allowlocalhttp in the game server launch arguments, the bot listener, and network/firewall access from the game server."
+                .. " Test from the game server OS/container: curl -i --connect-timeout 5 "
+                .. logText("http://" .. GetConVar("discordbot_host"):GetString() .. ":" .. GetConVar("discordbot_port"):GetString() .. "/health", apiKey)
+                .. " (401 without an API key confirms HTTP connectivity).")
+            finish(nil)
+        end,
+        { ["X-API-Key"] = apiKey }
+    )
 end
 
-function commonRoundState()
-  if gmod.GetGamemode().Name == "Trouble in Terrorist Town" or
-     gmod.GetGamemode().Name == "TTT2 (Advanced Update)" then
-    -- Round state 3 => Game is running
-    return ((GetRoundState() == 3) and 1 or 0)
-  end
+local function post(route, parameters, callback)
+    requestID = requestID + 1
+    table.insert(requests, { id = requestID, route = route, parameters = parameters, callback = callback })
+    nextRequest()
+end
 
-  if gmod.GetGamemode().Name == "Murder" then
-    -- Round state 1 => Game is running
-    return ((gmod.GetGamemode():GetRound() == 1) and 1 or 0)
-  end
+local function sendIcon(ply, muted)
+    if not IsValid(ply) or ply:IsBot() then return end
+    net.Start("drawMute")
+    net.WriteBool(muted)
+    net.Send(ply)
+end
 
-  -- Round state could not be determined
-  return -1
+local function roundActive()
+    -- TTT and TTT2 expose GetRoundState; Murder exposes GM:GetRound.
+    if isfunction(GetRoundState) then return GetRoundState() == (ROUND_ACTIVE or 3) end
+    local gm = gmod.GetGamemode()
+    return gm and gm.Name == "Murder" and isfunction(gm.GetRound) and gm:GetRound() == 1
+end
+
+local function shouldMute(ply)
+    return roundActive() and (not ply:Alive() or ply:Team() == TEAM_SPECTATOR)
+end
+
+local function setMute(ply, muted)
+    if ply:IsBot() then return end
+    post("/mute", { steamID = ply:SteamID(), mute = tostring(muted) }, function(data)
+        if data and data.status then sendIcon(ply, muted) end
+    end)
+end
+
+local function unmuteAll()
+    post("/unmuteAll", {}, function(data)
+        if not data or not data.status then return end
+        for _, ply in ipairs(player.GetHumans()) do sendIcon(ply, false) end
+    end)
+end
+
+local function syncPlayers()
+    if not roundActive() then unmuteAll() return end
+    for _, ply in ipairs(player.GetHumans()) do setMute(ply, shouldMute(ply)) end
 end
 
 hook.Add("PlayerInitialSpawn", "ttt_discord_bot_PlayerInitialSpawn", function(ply)
-	http.Post("http://"..GetConVar("discordbot_host"):GetString()..":"..GetConVar("discordbot_port"):GetString().."/checkUser", 
-		{
-			steamID= ply:SteamID(),
-			steamName = ply:GetName()
-		}, 
-		function(res)
-			util.JSONToTable(res)
-			responseTable = util.JSONToTable(res);
-			if (responseTable.status == false) then
-				print("Kicked "..ply:GetName()..": No Discord")
-				ply:Kick( "Please connect with Discord" )
-			end
-		end
-	)
+    if ply:IsBot() then return end
+    post("/checkUser", { steamID = ply:SteamID(), steamName = ply:Nick() }, function(data)
+        if not IsValid(ply) then return end
+        -- An outage is not evidence that the player is unlinked.
+        if not data then return end
+        if not data.status and GetConVar("discordbot_require_link"):GetBool() then
+            ply:Kick("React to your message in Discord's confirms channel, then reconnect.")
+        elseif data.status then
+            setMute(ply, shouldMute(ply))
+        end
+    end)
 end)
 
 hook.Add("PlayerSpawn", "ttt_discord_bot_PlayerSpawn", function(ply)
-  unmute(ply)
+    timer.Simple(0, function()
+        if IsValid(ply) then setMute(ply, shouldMute(ply)) end
+    end)
 end)
 hook.Add("PlayerDisconnected", "ttt_discord_bot_PlayerDisconnected", function(ply)
-  unmute(ply)
-end)
-hook.Add("ShutDown","ttt_discord_bot_ShutDown", function()
-  unmute()
-end)
-hook.Add("TTTEndRound", "ttt_discord_bot_TTTEndRound", function()
-	timer.Simple(0.1,function() unmute() end)
-end)
-hook.Add("TTTBeginRound", "ttt_discord_bot_TTTBeginRound", function()--in case of round-restart via command
-  unmute()
-end)
-hook.Add("OnEndRound", "ttt_discord_bot_OnEndRound", function()
-        timer.Simple(0.1,function() unmute() end)
-end)
-hook.Add("OnStartRound", "ttt_discord_bot_OnStartRound", function()
-  unmute()
+    setMute(ply, false)
 end)
 hook.Add("PostPlayerDeath", "ttt_discord_bot_PostPlayerDeath", function(ply)
-	if (commonRoundState() == 1) then
-		mute(ply)
-	end
+    if roundActive() then setMute(ply, true) end
+end)
+hook.Add("TTTPrepareRound", "ttt_discord_bot_TTTPrepareRound", unmuteAll)
+hook.Add("TTTEndRound", "ttt_discord_bot_TTTEndRound", unmuteAll)
+hook.Add("TTTBeginRound", "ttt_discord_bot_TTTBeginRound", syncPlayers)
+hook.Add("OnEndRound", "ttt_discord_bot_OnEndRound", unmuteAll)
+hook.Add("OnStartRound", "ttt_discord_bot_OnStartRound", function()
+    timer.Simple(0, syncPlayers)
+end)
+hook.Add("ShutDown", "ttt_discord_bot_ShutDown", unmuteAll)
+-- Recover from temporary bot outages/restarts and changes to spectator state.
+-- Do not build an unbounded queue while HTTP is unavailable.
+timer.Create("ttt_discord_bot_sync", 15, 0, function()
+    if not busy and #requests == 0 then syncPlayers() end
 end)

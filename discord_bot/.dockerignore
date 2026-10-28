@@ -1,0 +1,11 @@
+# Allow only image inputs; never send credentials or live account links to the builder.
+*
+!Dockerfile
+!.dockerignore
+!package.json
+!package-lock.json
+!bot.js
+!app.js
+!service.js
+!store.js
+!healthcheck.js

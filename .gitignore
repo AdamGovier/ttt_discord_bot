@@ -1,2 +1,11 @@
 discord_bot/node_modules/
-discord_bot/package-lock.json
+discord_bot/.env
+discord_bot/.env.*
+!discord_bot/.env.example
+discord_bot/config.json
+discord_bot/database.json
+discord_bot/data/
+discord_bot/database.backup.json
+
+# Standalone script containing a hardcoded Discord token.
+/test.js

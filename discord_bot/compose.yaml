@@ -1,0 +1,30 @@
+services:
+  discord_bot:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?Set DISCORD_TOKEN in the environment}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-}
+      BOT_API_KEY: ${BOT_API_KEY:?Set BOT_API_KEY in the environment and discordbot_api_key on the game server}
+      BOT_HOST: 0.0.0.0
+      BOT_PORT: "37405"
+      BOT_DATABASE_PATH: /app/data/database.json
+    ports:
+      - "${BOT_BIND_ADDRESS:-127.0.0.1}:${BOT_PORT:-37405}:37405"
+    volumes:
+      - bot_data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot_data:
