@@ -107,6 +107,68 @@ local function post(route, parameters, callback)
     nextRequest()
 end
 
+local function gameModeName()
+    local gm = gmod.GetGamemode()
+    return (gm and (gm.Name or gm.FolderName)) or engine.ActiveGamemode() or "Unknown"
+end
+
+local function sendGameEvent(eventName, values, retries)
+    local parameters = {
+        event = eventName,
+        gameMode = gameModeName(),
+        map = game.GetMap() or "Unknown"
+    }
+    for key, value in pairs(values or {}) do parameters[key] = tostring(value) end
+    post("/event", parameters, function(data)
+        if not data and (retries or 0) > 0 then
+            timer.Simple(10, function() sendGameEvent(eventName, values, retries - 1) end)
+        end
+    end)
+end
+
+local function playerCounts()
+    local humans = player.GetHumans()
+    local alive = 0
+    for _, ply in ipairs(humans) do
+        if ply:Alive() and ply:Team() ~= TEAM_SPECTATOR then alive = alive + 1 end
+    end
+    return #humans, alive
+end
+
+local function tttRoundResult(result)
+    if result == WIN_TRAITOR then return "traitors" end
+    if result == WIN_INNOCENT then return "innocents" end
+    if result == WIN_TIMELIMIT then return "time_limit" end
+    return "unknown"
+end
+
+local function reportTTTRound(result)
+    local players, alive = playerCounts()
+    sendGameEvent("round_result", {
+        result = tttRoundResult(result),
+        resultCode = result or "",
+        players = players,
+        alive = alive
+    }, 2)
+end
+
+local function murderRoundResult(reason)
+    if reason == 1 then return "murderer" end
+    if reason == 2 then return "bystanders" end
+    if reason == 3 then return "murderer_disconnected" end
+    return "unknown"
+end
+
+local function reportMurderRound(reason)
+    local players, alive = playerCounts()
+    sendGameEvent("round_result", {
+        result = murderRoundResult(reason),
+        resultCode = reason or "",
+        players = players,
+        alive = alive
+    }, 2)
+end
+
 local function sendIcon(ply, muted)
     if not IsValid(ply) or ply:IsBot() then return end
     net.Start("drawMute")
@@ -170,13 +232,23 @@ hook.Add("PostPlayerDeath", "ttt_discord_bot_PostPlayerDeath", function(ply)
     if roundActive() then setMute(ply, true) end
 end)
 hook.Add("TTTPrepareRound", "ttt_discord_bot_TTTPrepareRound", unmuteAll)
-hook.Add("TTTEndRound", "ttt_discord_bot_TTTEndRound", unmuteAll)
+hook.Add("TTTEndRound", "ttt_discord_bot_TTTEndRound", function(result)
+    reportTTTRound(result)
+    unmuteAll()
+end)
 hook.Add("TTTBeginRound", "ttt_discord_bot_TTTBeginRound", syncPlayers)
 hook.Add("OnEndRound", "ttt_discord_bot_OnEndRound", unmuteAll)
+hook.Add("OnEndRoundResult", "ttt_discord_bot_OnEndRoundResult", reportMurderRound)
 hook.Add("OnStartRound", "ttt_discord_bot_OnStartRound", function()
     timer.Simple(0, syncPlayers)
 end)
-hook.Add("ShutDown", "ttt_discord_bot_ShutDown", unmuteAll)
+hook.Add("InitPostEntity", "ttt_discord_bot_ServerStarted", function()
+    timer.Simple(1, function() sendGameEvent("server_started", nil, 5) end)
+end)
+hook.Add("ShutDown", "ttt_discord_bot_ShutDown", function()
+    sendGameEvent("server_shutting_down")
+    unmuteAll()
+end)
 -- Recover from temporary bot outages/restarts and changes to spectator state.
 -- Do not build an unbounded queue while HTTP is unavailable.
 timer.Create("ttt_discord_bot_sync", 15, 0, function()

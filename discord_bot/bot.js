@@ -62,7 +62,7 @@ async function main() {
             if (existing && existing.type !== type) throw new Error(`Configured ${name} channel has the wrong type`);
             return existing || guild.channels.create({ name, type, parent: category.id });
         }
-        await ensureChannel('', 'info', ChannelType.GuildText);
+        db.infoChannel = (await ensureChannel(db.infoChannel, 'info', ChannelType.GuildText)).id;
         db.voiceChannel = (await ensureChannel(db.voiceChannel, 'TTT', ChannelType.GuildVoice)).id;
         db.newJoinChannel = (await ensureChannel(db.newJoinChannel, 'confirms', ChannelType.GuildText)).id;
         db.guildId = guild.id;

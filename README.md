@@ -95,6 +95,18 @@ When an unlinked player connects, the bot sends a confirmation message. With `di
 
 This reaction links accounts, but it does not verify Steam ownership. Use this feature only with a trusted group. Each Steam account and Discord account can have only one link. For a direct Node.js installation, stop the bot, back up `data/database.json`, remove the affected entry from `users`, and start the bot again. For Docker, edit a backup and use the restore procedure below.
 
+### Info channel reports
+
+The Garry's Mod addon sends authenticated status events to the bot. The bot posts colored embeds in the generated `info` channel for:
+
+- Game server startup, with the game mode and map.
+- Game server shutdown, with the game mode and map.
+- Round results, with the winner, map, and alive-player count.
+
+TTT and TTT2 results report traitor, innocent, or time-limit wins. Murder reports murderer wins, bystander wins, or murderer disconnects. A custom TTT2 win condition that does not use a standard result reports its numeric result code.
+
+Startup and round-result reports retry after temporary connection failures. Shutdown reporting is best effort because Garry's Mod HTTP requests are asynchronous and the process can exit before the request completes. Deploy the updated Node.js bot and copy the updated addon to the game server; the feature requires both parts.
+
 ## Docker Compose deployment
 
 Install [Docker Engine and Docker Compose](https://docs.docker.com/engine/install/). Docker replaces the local Node.js requirement. Confirm that both commands are available:
@@ -234,6 +246,7 @@ Dokploy documentation:
 - The bot manages linked members in any voice channel in the configured Discord server.
 - The bot keeps the required mute state when a player leaves voice. It applies that state when the player joins voice again.
 - The addon synchronizes player state every 15 seconds after a temporary outage.
+- The addon sends game-server lifecycle and round-result events to the `info` channel.
 - Bot startup and a clean bot shutdown try to unmute all linked members.
 - A force stop or game server crash cannot guarantee an unmute. Restart the bot or unmute members manually.
 - A round reset unmutes all linked members. This can also remove a manual server mute. Use the bot in a dedicated game server.

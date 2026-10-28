@@ -79,6 +79,50 @@ function createService({ guild, store, logger = console }) {
             await applyMute(newState.id, desired.get(newState.id));
         }
     }
-    return { checkUser, setMute, unmuteAll, voiceStateUpdate };
+
+    async function reportEvent(event) {
+        const infoChannel = store.read().infoChannel;
+        if (!infoChannel) throw Object.assign(new Error('The info channel is not configured'), { status: 503 });
+        const channel = await guild.channels.fetch(infoChannel);
+        if (!channel || typeof channel.send !== 'function') {
+            throw Object.assign(new Error('The info channel is unavailable'), { status: 503 });
+        }
+
+        const results = {
+            traitors: ['Traitors win', 0xed4245],
+            innocents: ['Innocents win', 0x5865f2],
+            time_limit: ['Time expired - innocents win', 0xfee75c],
+            murderer: ['Murderer wins', 0xed4245],
+            bystanders: ['Bystanders win', 0x5865f2],
+            murderer_disconnected: ['Murderer disconnected - bystanders win', 0xfee75c],
+            unknown: ['Unknown result', 0x99aab5],
+        };
+        const fields = [
+            { name: 'Game mode', value: escapeMarkdown(event.gameMode), inline: true },
+            { name: 'Map', value: escapeMarkdown(event.map), inline: true },
+        ];
+        let title;
+        let color;
+        if (event.event === 'server_started') {
+            title = 'Game server started';
+            color = 0x57f287;
+        } else if (event.event === 'server_shutting_down') {
+            title = 'Game server shutting down';
+            color = 0xed4245;
+        } else {
+            const result = results[event.result];
+            title = `Round ended - ${result[0]}`;
+            color = result[1];
+            fields.push({ name: 'Alive players', value: `${event.alive} / ${event.players}`, inline: true });
+            if (event.result === 'unknown' && event.resultCode) {
+                fields.push({ name: 'Result code', value: event.resultCode, inline: true });
+            }
+        }
+        await channel.send({
+            embeds: [{ title, color, fields, timestamp: new Date().toISOString() }],
+            allowedMentions: { parse: [] },
+        });
+    }
+    return { checkUser, setMute, unmuteAll, voiceStateUpdate, reportEvent };
 }
 module.exports = { createService };

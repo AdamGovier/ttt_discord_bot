@@ -6,7 +6,7 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { createStore } = require('../store');
 const { createService } = require('../service');
-const { createApp, parseMute } = require('../app');
+const { createApp, parseMute, parseGameEvent } = require('../app');
 
 const steamA = 'STEAM_0:1:123';
 const steamB = 'STEAM_0:0:456';
@@ -15,7 +15,7 @@ function fixture(t, users = []) {
     const directory = mkdtempSync(path.join(tmpdir(), 'ttt-test-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const filename = path.join(directory, 'database.json');
-    writeFileSync(filename, JSON.stringify({ firstTimeSetup: false, newJoinChannel: 'confirms', users }));
+    writeFileSync(filename, JSON.stringify({ firstTimeSetup: false, newJoinChannel: 'confirms', infoChannel: 'info', users }));
     const store = createStore(filename);
     const messages = [];
     const members = new Map();
@@ -56,6 +56,17 @@ test('form false becomes a boolean false, invalid values are rejected', () => {
     assert.equal(parseMute('true'), true);
     assert.equal(parseMute(false), false);
     for (const value of [undefined, '0', 'yes', [], {}, 1]) assert.throws(() => parseMute(value));
+});
+
+test('game events are normalized and malformed results are rejected', () => {
+    assert.deepEqual(parseGameEvent({ event: 'server_started', gameMode: 'TTT', map: 'ttt_test' }), {
+        event: 'server_started', gameMode: 'TTT', map: 'ttt_test',
+    });
+    assert.deepEqual(parseGameEvent({ event: 'round_result', gameMode: 'TTT', map: 'ttt_test', result: 'traitors', players: '8', alive: '2', resultCode: '2' }), {
+        event: 'round_result', gameMode: 'TTT', map: 'ttt_test', result: 'traitors', players: 8, alive: 2, resultCode: '2',
+    });
+    assert.throws(() => parseGameEvent({ event: 'round_result', result: 'invalid', players: '8', alive: '2' }), /not supported/);
+    assert.throws(() => parseGameEvent({ event: 'round_result', result: 'traitors', players: '2', alive: '3' }), /must not exceed/);
 });
 
 test('store preserves concurrent confirmations and enforces one-to-one links', t => {
@@ -199,14 +210,25 @@ test('unmuteAll attempts every player even if one fails', async t => {
     assert.deepEqual(target.calls, [false, false]);
 });
 
+test('game events are posted as embeds in the info channel', async t => {
+    const { service, messages } = fixture(t);
+    await service.reportEvent({ event: 'server_started', gameMode: 'TTT2', map: 'ttt_minecraft' });
+    await service.reportEvent({ event: 'round_result', gameMode: 'TTT2', map: 'ttt_minecraft', result: 'innocents', players: 8, alive: 3, resultCode: '1' });
+    assert.equal(messages[0].payload.embeds[0].title, 'Game server started');
+    assert.equal(messages[1].payload.embeds[0].title, 'Round ended - Innocents win');
+    assert.deepEqual(messages[1].payload.embeds[0].fields.at(-1), { name: 'Alive players', value: '3 / 8', inline: true });
+});
+
 async function httpFixture(t, overrides = {}) {
     const calls = [];
     const service = {
         async checkUser() { return false; },
         async setMute(...args) { calls.push(args); },
         async unmuteAll() {},
+        async reportEvent(event) { events.push(event); },
         ...overrides.service,
     };
+    const events = [];
     const app = createApp({ service, apiKey: overrides.apiKey, ready: overrides.ready, logger: quiet });
     const server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -216,7 +238,7 @@ async function httpFixture(t, overrides = {}) {
         const response = await fetch(base + route, { method: 'POST', headers, body: new URLSearchParams(body) });
         return { code: response.status, body: await response.json() };
     }
-    return { post, calls };
+    return { post, calls, events };
 }
 
 test('HTTP accepts the addon form protocol and correctly unmutes', async t => {
@@ -253,4 +275,13 @@ test('HTTP awaits Discord and reports failures as JSON', async t => {
     const response = await post('/mute', { steamID: steamA, mute: 'true' });
     assert.equal(response.code, 502);
     assert.equal(response.body.status, false);
+});
+
+test('HTTP accepts game events and rejects invalid event data', async t => {
+    const { post, events } = await httpFixture(t);
+    const accepted = await post('/event', { event: 'round_result', gameMode: 'TTT', map: 'ttt_test', result: 'time_limit', players: '6', alive: '2', resultCode: '3' });
+    assert.equal(accepted.code, 200);
+    assert.deepEqual(events[0], { event: 'round_result', gameMode: 'TTT', map: 'ttt_test', result: 'time_limit', players: 6, alive: 2, resultCode: '3' });
+    assert.equal((await post('/event', { event: 'round_result', result: 'invalid', players: '6', alive: '2' })).code, 400);
+    assert.equal(events.length, 1);
 });
